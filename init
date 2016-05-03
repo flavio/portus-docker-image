@@ -1,0 +1,52 @@
+#!/bin/bash
+set -ex
+
+setup_database() {
+  set +e
+
+  TIMEOUT=90
+  COUNT=0
+  RETRY=1
+
+  export SKIP_MIGRATION=1
+
+  while [ $RETRY -ne 0 ]; do
+    case $(SKIP_MIGRATION=1 portusctl exec rails r /check_db.rb) in
+      "DB_DOWN")
+        if [ "$COUNT" -ge "$TIMEOUT" ]; then
+          printf " [FAIL]\n"
+          echo "Timeout reached, exiting with error"
+          exit 1
+        fi
+        echo "Waiting for mariadb to be ready in 5 seconds"
+        sleep 5
+        COUNT=$((COUNT+5))
+        ;;
+      "DB_MISSING")
+        # create db, apply schema and seed
+        echo "Initializing database"
+        SKIP_MIGRATION=1 portusctl rake db:setup
+        if [ $? -ne 0 ]; then
+            echo "Error at setup time"
+            exit 1
+        fi
+        ;;
+      "DB_READY")
+        echo "Database ready"
+        break
+        ;;
+    esac
+  done
+  set -e
+}
+
+setup_database
+
+# ensure additional certificates (like the one of the docker registry
+# are known
+if [ -d "/secrets" ]; then
+  cp /secrets/*.crt /etc/pki/trust/anchors
+  update-ca-certificates
+fi
+
+exec env /usr/sbin/start_apache2 -DFOREGROUND -k start
